@@ -63,3 +63,122 @@
     vote-direction: bool
   }
 )
+
+;; Enhanced Deposit Function
+(define-public (deposit-funds 
+  (amount uint)
+  (platform-id uint)
+)
+  (begin
+    ;; Check emergency mode
+    (asserts! (not (var-get emergency-mode)) ERR-EMERGENCY-LOCK)
+    
+    ;; Validate deposit
+    (asserts! (> amount u0) ERR-INSUFFICIENT-BALANCE)
+    
+    ;; Transfer funds
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    
+    ;; Update user position
+    (map-set user-positions 
+      { user: tx-sender }
+      {
+        total-deposited: amount,
+        current-yield: u0,
+        last-deposit-time: stacks-block-height,
+        position-nft: u0
+      }
+    )
+    
+    ;; Update platform liquidity
+    (let 
+      ((current-platform (unwrap! 
+        (map-get? yield-platforms { platform-id: platform-id }) 
+        ERR-UNAUTHORIZED
+      )))
+      (map-set yield-platforms 
+        { platform-id: platform-id }
+        (merge current-platform 
+          { 
+            total-liquidity: (+ 
+              (get total-liquidity current-platform) 
+              amount 
+            )
+          }
+        )
+      )
+    )
+    
+    ;; Emit deposit event
+    (print { 
+      event: "deposit", 
+      user: tx-sender, 
+      amount: amount,
+      platform: platform-id 
+    })
+    
+    (ok true)
+  )
+)
+
+;; Advanced Withdrawal Mechanism
+(define-public (withdraw-funds 
+  (amount uint)
+  (platform-id uint)
+)
+  (begin
+    ;; Validate withdrawal
+    (asserts! (not (var-get emergency-mode)) ERR-EMERGENCY-LOCK)
+    
+    (let 
+      (
+        (user-position (unwrap! 
+          (map-get? user-positions { user: tx-sender }) 
+          ERR-UNAUTHORIZED
+        ))
+        (current-platform (unwrap! 
+          (map-get? yield-platforms { platform-id: platform-id }) 
+          ERR-UNAUTHORIZED
+        ))
+        
+        ;; Calculate withdrawal with fee
+        (fee (/ (* amount (var-get protocol-fee-percentage)) u100))
+        (net-withdrawal (- amount fee))
+      )
+      
+      ;; Transfer funds back
+      (try! (stx-transfer? 
+        net-withdrawal 
+        (as-contract tx-sender) 
+        tx-sender
+      ))
+      
+      ;; Update platform and user state
+      (map-set yield-platforms 
+        { platform-id: platform-id }
+        (merge current-platform 
+          { 
+            total-liquidity: (- 
+              (get total-liquidity current-platform) 
+              amount 
+            )
+          }
+        )
+      )
+      
+      (map-set user-positions 
+        { user: tx-sender }
+        (merge user-position 
+          { 
+            total-deposited: (- 
+              (get total-deposited user-position) 
+              amount 
+            )
+          }
+        )
+      )
+      
+      (ok true)
+    )
+  )
+)
